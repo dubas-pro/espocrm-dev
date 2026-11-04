@@ -1,0 +1,58 @@
+{
+  "$schema": "https://docs.renovatebot.com/renovate-schema.json",
+  "extends": ["config:recommended", "helpers:pinGitHubActionDigests"],
+  "description": [
+    "The base images (php, node) are not pinned: the weekly build pulls the current ones of their tags.",
+    "Renovate tracks the versions of the Dockerfile defaults, to report new PHP and Node.js lines."
+  ],
+  "enabledManagers": ["custom.regex", "dockerfile", "github-actions"],
+  "customManagers": [
+    {
+      "customType": "regex",
+      "description": "Default PHP and Node.js versions in the Dockerfile, the newest of the build matrix",
+      "managerFilePatterns": ["/^Dockerfile$/"],
+      "matchStrings": ["ARG (?<depName>PHP|NODE)_VERSION=(?<currentValue>\\S+)"],
+      "depNameTemplate": "{{{lowercase depName}}}",
+      "datasourceTemplate": "docker"
+    }
+  ],
+  "packageRules": [
+    {
+      "description": "Tracked by the custom manager instead: the dockerfile one reads them from the FROM lines with the ARG defaults filled in, a text it can't find to replace",
+      "matchManagers": ["dockerfile"],
+      "matchDepNames": ["php", "node"],
+      "enabled": false
+    },
+    {
+      "description": "Major and minor lines only: patch releases come with the weekly build",
+      "matchManagers": ["custom.regex"],
+      "matchUpdateTypes": ["patch", "digest"],
+      "enabled": false
+    },
+    {
+      "description": "A new line goes into the build matrix too, which Renovate can't extend itself",
+      "matchManagers": ["custom.regex"],
+      "prBodyNotes": [
+        "Add this version to the matrix of `.github/workflows/build.yml` (and move `latest` to it), and update the tags in `README.md`. Drop versions that EspoCRM no longer supports or that reached end of life."
+      ]
+    },
+    {
+      "description": "Node.js: LTS lines only (even majors up to 26; every major is an LTS from 27 on, six months after its release: merge then)",
+      "matchManagers": ["custom.regex"],
+      "matchDepNames": ["node"],
+      "allowedVersions": "/^(\\d*[02468]|2[7-9]|[3-9]\\d)$/"
+    },
+    {
+      "description": [
+        "One pull request for all non-major GitHub Actions updates (the linter images of lint.yml too), merged once the build passes.",
+        "Weekly, as Renovate itself releases several times a day.",
+        "The commits also keep the weekly schedule enabled, which GitHub disables after 60 days without activity."
+      ],
+      "matchManagers": ["github-actions"],
+      "matchUpdateTypes": ["minor", "patch", "digest"],
+      "groupName": "GitHub Actions non-major",
+      "schedule": ["before 6am on monday"],
+      "automerge": true
+    }
+  ]
+}

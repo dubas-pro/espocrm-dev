@@ -1,0 +1,77 @@
+name: End-of-life check
+
+# Opens an issue when a PHP or Node.js version of the build matrix is within WARN_DAYS of its end of
+# life (data from endoflife.date), so that it is dropped before its tags stop getting fixes.
+
+on:
+  schedule:
+    - cron: '0 6 * * 1'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  issues: write
+
+jobs:
+  eol-check:
+    runs-on: ubuntu-26.04
+
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Check end-of-life dates
+        env:
+          GH_TOKEN: ${{ github.token }}
+          WORKFLOW: .github/workflows/build.yml
+          WARN_DAYS: '90'
+        run: |
+          set -o errexit -o nounset -o pipefail
+
+          # endoflife.date product:key of the build matrix
+          for pair in php:php nodejs:node; do
+            product="${pair%%:*}"
+            key="${pair#*:}"
+
+            versions="$(yq ".jobs.build.strategy.matrix.${key}[]" "${WORKFLOW}")"
+            if [[ -z "${versions}" ]]; then
+              echo "::error::${key} not found in the matrix of ${WORKFLOW}"
+              exit 1
+            fi
+
+            for cycle in ${versions}; do
+              eol="$(curl --fail --silent --show-error \
+                  "https://endoflife.date/api/v1/products/${product}/releases/${cycle}" \
+                | jq --raw-output '.result.eolFrom // empty')"
+              if [[ -z "${eol}" ]]; then
+                echo "${product} ${cycle}: no end-of-life date yet"
+                continue
+              fi
+
+              days_left=$(( ($(date --date="${eol}" +%s) - $(date +%s)) / 86400 ))
+              echo "${product} ${cycle}: end of life ${eol} (${days_left} days)"
+              if (( days_left > WARN_DAYS )); then
+                continue
+              fi
+
+              title="${product} ${cycle} end of life on ${eol}"
+              if gh issue list --state open --limit 200 --json title --jq '.[].title' \
+                  | grep --fixed-strings --line-regexp --quiet "${title}"; then
+                echo "Issue already open: ${title}"
+                continue
+              fi
+
+              if (( days_left < 0 )); then
+                status="stopped getting updates on **${eol}** ($(( -days_left )) days ago)"
+              else
+                status="stops getting updates on **${eol}** (${days_left} days from now)"
+              fi
+
+              gh issue create --title "${title}" --body "$(cat <<EOF
+          The build matrix (\`${key}\` in \`${WORKFLOW}\`) has ${product} ${cycle}, which ${status}.
+
+          Drop it from the matrix (move \`latest\` if needed) and from the tags in \`README.md\`; its
+          last dated tags stay available. See https://endoflife.date/${product}
+          EOF
+              )"
+            done
+          done

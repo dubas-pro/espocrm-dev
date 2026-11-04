@@ -1,0 +1,2 @@
+# LF on every platform: with CRLF, the shebang of docker-entrypoint.sh would run `bash\r`.
+* text=auto eol=lf

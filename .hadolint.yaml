@@ -1,0 +1,6 @@
+ignored:
+  # Pin versions in apt-get install: they come from the Debian release of the base image, which the
+  # weekly build keeps current (as in the official images).
+  - DL3008
+  # COPY --from should reference a stage: composer and the extension installer are images.
+  - DL3022

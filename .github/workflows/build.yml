@@ -1,0 +1,174 @@
+name: Build
+
+on:
+  # Not filtered by paths here: the required check (Build result) must report on every pull
+  # request, so the `changes` job skips the builds instead.
+  push:
+    branches: [main]
+  pull_request:
+  # Weekly, to pick up the security fixes of the base images.
+  schedule:
+    - cron: '17 4 * * 1'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+env:
+  IMAGE: ghcr.io/${{ github.repository }}
+
+jobs:
+  # Whether a push or pull request changes what goes into the image. The weekly and manual builds
+  # always build, so they don't run it.
+  changes:
+    if: github.event_name == 'push' || github.event_name == 'pull_request'
+    runs-on: ubuntu-26.04
+    permissions:
+      contents: read
+      # The files of a pull request come from the API.
+      pull-requests: read
+    outputs:
+      image: ${{ steps.filter.outputs.image }}
+
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - id: filter
+        uses: dorny/paths-filter@ceb8a2b8f2d89434be7ff52d3de7ec3738c5cc9d # v4.0.3
+        with:
+          filters: |
+            image:
+              - .dockerignore
+              - Dockerfile
+              - docker-entrypoint.sh
+              - php.ini
+              - .github/workflows/build.yml
+
+  build:
+    name: php${{ matrix.php }}-node${{ matrix.node }}
+    needs: changes
+    # `changes` skipped: a weekly or manual build.
+    if: ${{ !cancelled() && (needs.changes.outputs.image == 'true' || needs.changes.result == 'skipped') }}
+    runs-on: ubuntu-26.04
+    permissions:
+      contents: read
+      packages: write
+
+    strategy:
+      fail-fast: false
+      matrix:
+        # PHP: those supported by the current EspoCRM (composer.json, "php").
+        # Node.js: the LTS lines (https://github.com/nodejs/Release#release-schedule).
+        php: ['8.3', '8.4', '8.5']
+        node: ['22', '24', '26']
+        include:
+          # The newest combination, also tagged `latest`.
+          - php: '8.5'
+            node: '26'
+            latest: true
+
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - uses: docker/setup-qemu-action@99012661954931238ded8c8b007157a8430204e1 # v4.4.0
+
+      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+
+      - id: meta
+        uses: docker/metadata-action@dc802804100637a589fabce1cb79ff13a1411302 # v6.2.0
+        env:
+          # On the multi-platform index too, which GHCR shows the description of.
+          DOCKER_METADATA_ANNOTATIONS_LEVELS: manifest,index
+        with:
+          images: ${{ env.IMAGE }}
+          flavor: latest=false
+          tags: |
+            type=raw,value=php${{ matrix.php }}-node${{ matrix.node }}
+            # Not overwritten by the next builds, to pin or go back to.
+            type=raw,value=php${{ matrix.php }}-node${{ matrix.node }}-{{date 'YYYYMMDD'}}
+            type=raw,value=latest,enable=${{ matrix.latest == true }}
+          labels: |
+            org.opencontainers.image.title=espocrm-dev
+            org.opencontainers.image.description=Unofficial image: PHP ${{ matrix.php }} with Apache, Xdebug, Composer and Node.js ${{ matrix.node }} for developing EspoCRM extensions
+          annotations: |
+            org.opencontainers.image.description=Unofficial image: PHP ${{ matrix.php }} with Apache, Xdebug, Composer and Node.js ${{ matrix.node }} for developing EspoCRM extensions
+
+      # For the tests below, before anything is pushed.
+      - name: Build (linux/amd64)
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        with:
+          context: .
+          platforms: linux/amd64
+          build-args: |
+            PHP_VERSION=${{ matrix.php }}
+            NODE_VERSION=${{ matrix.node }}
+          # Always the newest base images, as the weekly build is there for their fixes.
+          pull: true
+          load: true
+          tags: espocrm-dev:test
+          cache-from: type=gha,scope=php${{ matrix.php }}-node${{ matrix.node }}
+
+      - name: Test
+        run: |
+          set -o errexit -o nounset -o pipefail
+
+          docker run --rm espocrm-dev:test bash -c '
+              set -o errexit -o nounset -o pipefail
+              php --version | grep --quiet "^PHP ${{ matrix.php }}\."
+              node --version | grep --quiet "^v${{ matrix.node }}\."
+              php --modules | grep --quiet --line-regexp Xdebug
+              npm --version
+              grunt --version
+              composer --version
+          '
+
+          # www-data takes over the owner of the mounted repository, and runs the command.
+          repository="$(mktemp --directory)"
+          sudo chown 1234:2345 "${repository}"
+          docker run --rm --volume "${repository}:/var/www/default" espocrm-dev:test \
+              bash -c '[[ "$(id --user --name):$(id --user):$(id --group)" == www-data:1234:2345 ]]'
+
+          # Started as www-data, it can't remap but still runs the command.
+          docker run --rm --user www-data espocrm-dev:test true
+
+      - if: github.event_name != 'pull_request'
+        uses: docker/login-action@81c6f93d4bc991e510b342a00b419b3bb4efc5c6 # v4.7.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build (all platforms) and push
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        with:
+          context: .
+          platforms: linux/amd64,linux/arm64
+          build-args: |
+            PHP_VERSION=${{ matrix.php }}
+            NODE_VERSION=${{ matrix.node }}
+          pull: true
+          push: ${{ github.event_name != 'pull_request' }}
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          annotations: ${{ steps.meta.outputs.annotations }}
+          # Attached to the image: what it contains, and how and from what it was built.
+          sbom: true
+          provenance: mode=max
+          cache-from: type=gha,scope=php${{ matrix.php }}-node${{ matrix.node }}
+          cache-to: type=gha,mode=max,scope=php${{ matrix.php }}-node${{ matrix.node }}
+
+  # The one check to require: the matrix jobs are named after the versions, which change, and are
+  # skipped when nothing of the image changes.
+  result:
+    name: Build result
+    needs: [changes, build]
+    if: always()
+    runs-on: ubuntu-26.04
+
+    steps:
+      - if: contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled')
+        run: exit 1

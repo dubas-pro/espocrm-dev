@@ -1,0 +1,5 @@
+self-hosted-runner:
+  # Not self-hosted: GitHub runners newer than the list built into actionlint. Remove them once
+  # actionlint knows them (it then reports them as known labels).
+  labels:
+    - ubuntu-26.04
