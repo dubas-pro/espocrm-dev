@@ -1,7 +1,7 @@
 # Development image: PHP and Apache like the production one (the official `espocrm` image is based on
 # php:*-apache too), plus Xdebug and the tools the build needs (Composer, Node.js, git).
 
-ARG PHP_VERSION=8.5
+ARG PHP_VERSION=8.6
 ARG NODE_VERSION=26
 
 FROM node:${NODE_VERSION}-trixie-slim AS node
