@@ -33,7 +33,7 @@ jobs:
 
       - name: Renovate config
         if: ${{ !cancelled() }}
-        uses: docker://renovate/renovate:44.209.0@sha256:3609f05e0513fddd410666053c1a849397b57df40d68ec37fd747c7703222407
+        uses: docker://renovate/renovate:45.1.0@sha256:1438b77f8ed338e64c7a8bf53d40724fb6229690bcd3a42264158b0768ba9aba
         with:
           entrypoint: renovate-config-validator
           args: --strict
